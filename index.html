@@ -1112,7 +1112,8 @@ function openDish(i,j){
   const sd = r ? sideFor(r, sl.k) : '';
   openSheet(`<div class="grab"></div><div class="small muted">${sl.e} ${sl.l} · ${fmtDay(d)}</div><h3>${esc(n)}</h3>${sd?`<div class="muted">${esc(sd)}</div>`:''}
     <div class="vtags">${tags || '<span class="opt">🫙 Pantry dish — no fresh veg needed</span>'}</div>
-    <div class="row-btns"><button class="btn" id="sSwap">↻ Swap dish</button>${r && r.link?`<a class="btn ghost" href="${esc(r.link)}" target="_blank" rel="noopener" style="text-decoration:none">🔗 Open recipe</a>`:''}${sampleCap && !(r && r.recipe)?`<button class="btn primary" id="sHow">👩‍🍳 How to make it</button>`:''}<button class="btn ghost" id="sClose">Close</button></div>
+    <div class="row-btns"><button class="btn" id="sSwap">↻ Swap dish</button>${r && r.link?`<a class="btn ghost" href="${esc(r.link)}" target="_blank" rel="noopener" style="text-decoration:none">🔗 Open recipe</a>`:''}${sampleCap && !(r && r.recipe)?`<button class="btn primary" id="sHow">👩‍🍳 How to make it</button>`:''}</div>
+    <div class="row-btns" style="margin-top:8px"><a class="btn ghost" href="https://www.youtube.com/results?search_query=${encodeURIComponent(n+' recipe')}" target="_blank" rel="noopener" style="text-decoration:none">▶️ YouTube recipe</a><a class="btn ghost" href="https://www.google.com/search?q=${encodeURIComponent(n+' recipe')}" target="_blank" rel="noopener" style="text-decoration:none">🔍 Search recipe</a><button class="btn ghost" id="sClose">Close</button></div>
     ${r && r.link?`<div class="small muted" style="margin-top:6px;word-break:break-all">${esc(r.link)}</div>`:''}
     <div id="howBox">${r && r.recipe?`<div class="recipe">${esc(r.recipe)}</div>`:''}</div>`);
   document.getElementById('sSwap').onclick = ()=>{ closeSheet(); swapMeal(i,j); };
