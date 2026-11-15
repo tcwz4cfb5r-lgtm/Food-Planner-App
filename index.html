@@ -903,22 +903,128 @@ function renderAdd(){
   view.innerHTML = h;
   drawShotArea();
   document.getElementById('findBtn').onclick = ()=>{
-    const ids = parseText(document.getElementById('paste').value);
-    found = ids.map(id=>({id, lv:2, on:true}));
-    drawFound(ids.length ? '' : 'Nothing recognised. Try adding items by hand in My Fridge.');
+    const res = parseBill(document.getElementById('paste').value);
+    found = res.map(x=>({id:x.id, lv:x.lv, on:true}));
+    drawFound(res.length ? '' : 'Nothing recognised. Try adding items by hand in My Fridge.');
   };
 }
 function drawShotArea(){
   const el = document.getElementById('shotArea'); if (!el) return;
-  if (sampleCap && sampleImages){
-    el.innerHTML = `<div class="row-btns"><label class="btn primary filebtn">📷 Take bill photo<input type="file" id="shotCam" accept="image/*" capture="environment"></label>
-      <label class="btn filebtn">🖼️ Choose from gallery<input type="file" id="shot" accept="image/*" multiple></label></div>
-      <p class="small muted" style="margin:8px 0 0">Tip: lay the bill flat in good light so the item names are readable.</p>`;
-    document.getElementById('shot').onchange = e=>{ readShots([...e.target.files]); e.target.value=''; };
-    document.getElementById('shotCam').onchange = e=>{ readShots([...e.target.files]); e.target.value=''; };
-  } else if (sampleReady) {
-    el.innerHTML = `<span class="small muted">Reading bill photos needs Claude, so it only works when you open this app on claude.ai. Here, paste the order text below instead.</span>`;
+  if (!sampleReady){ return; }
+  const useClaude = !!(sampleCap && sampleImages);
+  el.innerHTML = `<div class="row-btns"><label class="btn primary filebtn">📷 Take bill photo<input type="file" id="shotCam" accept="image/*" capture="environment"></label>
+    <label class="btn filebtn">🖼️ Choose from gallery<input type="file" id="shot" accept="image/*" multiple></label></div>
+    <p class="small muted" style="margin:8px 0 0">${useClaude ? 'Tip: lay the bill flat in good light so the item names are readable.' : 'Reads printed bills and app screenshots right on your phone. Lay the bill flat in good light. Handwritten bills may not read well — check the list it finds. The first scan downloads the reader (about 5 MB).'}</p>`;
+  const go = files => useClaude ? readShots(files) : ocrBills(files);
+  document.getElementById('shot').onchange = e=>{ go([...e.target.files]); e.target.value=''; };
+  document.getElementById('shotCam').onchange = e=>{ go([...e.target.files]); e.target.value=''; };
+}
+/* ---- On-device bill reading (no Claude needed) ---- */
+let tessLoading = null;
+function loadTesseract(){
+  if (window.Tesseract) return Promise.resolve();
+  if (tessLoading) return tessLoading;
+  tessLoading = new Promise((res, rej)=>{
+    const sc = document.createElement('script');
+    sc.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    sc.onload = res; sc.onerror = ()=>{ tessLoading = null; rej(new Error('load')); };
+    document.head.appendChild(sc);
+  });
+  return tessLoading;
+}
+async function prepForOcr(file){
+  const bmp = await createImageBitmap(file);
+  const target = 2000, k = Math.min(2, target/Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width*k); c.height = Math.round(bmp.height*k);
+  const ctx = c.getContext('2d'); ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  const img = ctx.getImageData(0, 0, c.width, c.height), d = img.data;
+  let lo = 255, hi = 0; const g = new Uint8Array(d.length/4);
+  for (let i=0, j=0; i<d.length; i+=4, j++){ const v = (d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114)|0; g[j]=v; if (v<lo) lo=v; if (v>hi) hi=v; }
+  const span = Math.max(40, hi-lo);
+  for (let i=0, j=0; i<d.length; i+=4, j++){ const v = Math.max(0, Math.min(255, (g[j]-lo)*255/span)); d[i]=d[i+1]=d[i+2]=v; }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+async function ocrBills(files){
+  if (!files.length) return;
+  const box = document.getElementById('foundBox');
+  const status = t => { box.innerHTML = `<div class="card"><span class="spin"></span> ${t}</div>`; };
+  box.scrollIntoView({block:'center'});
+  status('Loading the bill reader…');
+  let worker;
+  try {
+    await loadTesseract();
+    let fileNo = 0;
+    worker = await Tesseract.createWorker('eng', 1, { logger: m=>{
+      if (m.status==='recognizing text') status(`Reading bill${files.length>1?' '+(fileNo+1)+' of '+files.length:''}… ${Math.round((m.progress||0)*100)}%`);
+      else if (/loading|initializ/i.test(m.status||'')) status('Getting the reader ready…');
+    }});
+    let text = '';
+    for (const f of files.slice(0,6)){
+      const c = await prepForOcr(f);
+      const { data } = await worker.recognize(c);
+      text += data.text + '\n'; fileNo++;
+    }
+    await worker.terminate();
+    const ta = document.getElementById('paste'); if (ta) ta.value = text.trim();
+    found = parseBill(text).map(x=>({id:x.id, lv:x.lv, on:true}));
+    drawFound(found.length ? '' : "Couldn't spot any vegetables, dairy or meat in this photo. The text it read is now in the box below — correct it or type the items, then tap Find vegetables.");
+  } catch(err){
+    try { if (worker) await worker.terminate(); } catch(e){}
+    drawFound("Couldn't load the bill reader. Check your internet connection and try again, or type the items in the box below.");
   }
+}
+const STOPWORDS = new Set(['batter','total','subtotal','amount','rate','qty','quantity','price','bill','cash','tax','gst','cgst','sgst','mrp','item','items','net','paid','change','discount','balance','invoice','date','time','thank','thanks','visit','again','card','upi','round','off','saved','savings','order','delivery','fee','tip','packing','handling']);
+function lev(a, b){
+  const m = a.length, n = b.length; if (Math.abs(m-n) > 2) return 9;
+  let prev = Array.from({length:n+1}, (_,j)=>j);
+  for (let i=1; i<=m; i++){ const cur=[i]; for (let j=1; j<=n; j++) cur[j] = Math.min(prev[j]+1, cur[j-1]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1)); prev = cur; }
+  return prev[n];
+}
+const skel = w => w.replace(/[aeiouy]/g,'').replace(/(.)\1+/g,'$1');
+function qtyLevel(line, id){
+  const m = line.match(/(\d+(?:\.\d+)?)\s*(kgs?|kilo|g|gm|gms|grams?|ml|l|ltr|litres?|liters?|pcs?|nos?|dozen|doz|dz)\b/i);
+  if (!m) return 2;
+  const v = parseFloat(m[1]), u = m[2].toLowerCase();
+  let base = null;
+  if (/^(kgs?|kilo|l|ltr|litres?|liters?)$/.test(u)) base = v*1000;
+  else if (/^(g|gm|gms|grams?|ml)$/.test(u)) base = v;
+  if (base!==null) return base < 250 ? 1 : base > 1000 ? 3 : 2;
+  const count = /^(dozen|doz|dz)$/.test(u) ? v*12 : v;
+  if (id==='eggs') return count < 6 ? 1 : count > 12 ? 3 : 2;
+  return count <= 1 ? 1 : count >= 4 ? 3 : 2;
+}
+function parseBill(text){
+  const best = new Map();
+  const single = VEG.flatMap(v=>v.a.filter(a=>!a.includes(' ')).map(a=>[a, v.id]));
+  const multi = VEG.flatMap(v=>v.a.filter(a=>a.includes(' ')).map(a=>[a, v.id])).sort((a,b)=>b[0].length-a[0].length);
+  for (const rawLine of text.split(/\n+|[,;|]/)){
+    const lineLc = rawLine.toLowerCase();
+    let work = ' ' + lineLc.replace(/[^a-z\s]/g,' ').replace(/\s+/g,' ') + ' ';
+    for (const x of EXCLUDE) work = work.split(' '+x+' ').join(' # ');
+    const ids = new Set();
+    for (const [a,id] of multi){ if (work.includes(' '+a+' ')){ ids.add(id); work = work.split(' '+a+' ').join(' # '); } }
+    for (const t of work.split(' ').filter(w=>w.length>=3 && !STOPWORDS.has(w))){
+      let hit = null;
+      for (const [a,id] of single){
+        if (t===a || t===a+'s'){ hit=id; break; }
+      }
+      if (!hit && t.length>=4){
+        for (const [a,id] of single){
+          if (a.length<4) continue;
+          const tol = a.length>=7 ? 2 : 1;
+          if (lev(t,a) <= tol){ hit=id; break; }
+        }
+      }
+      if (!hit){
+        const st = skel(t);
+        if (st.length>=3) for (const [a,id] of single){ if (a.length>=4 && t[0]===a[0] && skel(a)===st){ hit=id; break; } }
+      }
+      if (hit) ids.add(hit);
+    }
+    ids.forEach(id=>{ const lv = qtyLevel(lineLc, id); best.set(id, Math.max(best.get(id)||0, lv)); });
+  }
+  return [...best].map(([id,lv])=>({id,lv}));
 }
 function parseText(txt){
   let work = ' ' + txt.toLowerCase().replace(/[^a-z\s]/g,' ').replace(/\s+/g,' ') + ' ';
